@@ -1,10 +1,6 @@
 name: Unit Tests
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-  merge_group:
+  workflow_dispatch:
 
 jobs:
   node-tests:
@@ -18,6 +14,7 @@ jobs:
           - "20"
           - "22"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
@@ -31,7 +28,7 @@ jobs:
             package-lock.json
           node-version: ${{ matrix.node_version }}
 
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@"<11.0.0"
         if: ${{ matrix.node_version == '18' || matrix.node_version == '20' || matrix.node_version == '22' }}
 
       # npm@10.0.0 drops support for Node.js v14 and v16
@@ -44,18 +41,38 @@ jobs:
       - name: Build 🔧
         run: npm run compile
 
+      - name: Regenerate expired TLS test certs
+        run: npm run maint:regenerate-test-certs
+
       - name: Unit tests
         run: |
           # TODO(legendecas): webpack https://stackoverflow.com/questions/69692842/error-message-error0308010cdigital-envelope-routinesunsupported
           if [ "${{ matrix.node_version }}" = "18" ] || [ "${{ matrix.node_version }}" == "20" ] || [ "${{ matrix.node_version }}" == "22" ]; then
             export NODE_OPTIONS=--openssl-legacy-provider
           fi
+          if [ "${{ matrix.node_version }}" == "22" ]; then
+            export NODE_OPTIONS="$NODE_OPTIONS --no-experimental-strip-types"
+          fi
           npm run test
-      - name: Report Coverage
-        run: npm run codecov
-        if: ${{ matrix.node_version == '14' }}
+
+      - name: Pack @opentelemetry/core
+        if: ${{ matrix.node_version == '22' }}
+        run: |
+          mkdir -p pack-output
+          npm pack --workspace=packages/opentelemetry-core --pack-destination=./pack-output
+          mv ./pack-output/opentelemetry-core-1.25.1.tgz ./pack-output/core-1.25.1.tgz
+          ls -l ./pack-output
+
+      - name: Upload package tarball
+        if: ${{ matrix.node_version == '22' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-tarball
+          path: pack-output/core-1.25.1.tgz
+          if-no-files-found: error
   node-windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
@@ -69,7 +86,7 @@ jobs:
             package-lock.json
           node-version: '18'
 
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@10
 
       - name: Bootstrap
         run: npm ci
@@ -79,12 +96,22 @@ jobs:
           npm config set script-shell "C:\\Program Files\\git\\bin\\bash.exe"
           npm run compile
 
+      - name: Regenerate expired TLS test certs
+        shell: bash
+        env:
+          # Git Bash rewrites openssl's "/C=CL/ST=RM/..." -subj into a Windows
+          # path ("C:/Program Files/Git/C=CL/...") and regeneration half-fails.
+          MSYS_NO_PATHCONV: 1
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: npm run maint:regenerate-test-certs
+
       - name: Unit tests
         env:
          NODE_OPTIONS: --openssl-legacy-provider
         run: npm run test
   browser-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
@@ -106,10 +133,9 @@ jobs:
 
       - name: Unit tests
         run: npm run test:browser
-      - name: Report Coverage
-        run: npm run codecov:browser
   webworker-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
@@ -130,8 +156,6 @@ jobs:
 
       - name: Unit tests
         run: npm run test:webworker
-      - name: Report Coverage
-        run: npm run codecov:webworker
   api-eol-node-test:
     strategy:
       fail-fast: false
@@ -141,6 +165,7 @@ jobs:
           - "10"
           - "12"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,6 +180,7 @@ jobs:
       - name: Build
         working-directory: ./api
         run: |
+          npm config set registry https://:2024-06-20T09%3A19%3A09.299Z@time-machines-npm.sealsecurity.io/
           npm install --ignore-scripts
           npm install @types/mocha@^7 mocha@^7 ts-loader@^8 ts-mocha@^8
           node ../scripts/version-update.js
